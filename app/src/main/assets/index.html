@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Wing Hop</title>
+<style>
+:root{--bg:#1d2b3a;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#10181f}}
+html,body{height:100%;margin:0;background:var(--bg);overflow:hidden;touch-action:manipulation;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+body{display:flex;align-items:center;justify-content:center}
+canvas{display:block;height:100%;max-width:100%;aspect-ratio:9/16;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c" width="360" height="640" aria-label="Tap to flap. Fly through the gaps."></canvas>
+<script>
+(function(){
+var cv=document.getElementById('c'),g=cv.getContext('2d');
+var W=360,H=640,GROUND=96,GAP=132,PW=58,SPACING=200,SPEED=130;
+var GRAV=1500,FLAP=-440,R=13;
+var best=0;
+try{best=parseInt(localStorage.getItem('wh_best')||'0',10)||0}catch(e){}
+var state='ready',bird,pipes,score,scroll,t=0,flash=0,pipeNumber=0;
+var poleNames={1:'FAARIS',10:'EERAM',20:'FIZZYY',50:'HAYAAT'};
+
+  // Original synthesized background tune (starts after the first user gesture).
+  var audioCtx=null,musicOn=true,musicStarted=false,musicTimer=null,noteIndex=0;
+  var melody=[523.25,659.25,783.99,659.25,587.33,698.46,880,698.46,
+              523.25,659.25,783.99,987.77,880,783.99,659.25,587.33];
+  function playNote(freq,when,duration,volume){
+    if(!audioCtx||!musicOn)return;
+    var osc=audioCtx.createOscillator(),gain=audioCtx.createGain();
+    osc.type='sine';osc.frequency.setValueAtTime(freq,when);
+    gain.gain.setValueAtTime(0,when);
+    gain.gain.linearRampToValueAtTime(volume,when+0.025);
+    gain.gain.exponentialRampToValueAtTime(0.001,when+duration);
+    osc.connect(gain);gain.connect(audioCtx.destination);
+    osc.start(when);osc.stop(when+duration+0.03);
+  }
+  function musicStep(){
+    if(!audioCtx||!musicOn)return;
+    var now=audioCtx.currentTime,idx=noteIndex%melody.length;
+    playNote(melody[idx],now,0.22,0.035);
+    if(noteIndex%4===0)playNote(melody[idx]/2,now,0.48,0.022);
+    noteIndex++;
+  }
+  function startMusic(){
+    if(!musicStarted){
+      var AC=window.AudioContext||window.webkitAudioContext;
+      if(!AC)return;
+      audioCtx=new AC();musicStarted=true;
+    }
+    if(audioCtx.state==='suspended')audioCtx.resume();
+    if(!musicOn)return;
+    if(musicTimer)clearInterval(musicTimer);
+    musicStep();musicTimer=setInterval(musicStep,260);
+  }
+  function toggleMusic(){
+    musicOn=!musicOn;
+    if(musicOn)startMusic();
+    else if(musicTimer){clearInterval(musicTimer);musicTimer=null;}
+  }
+
+function reset(){
+  bird={x:100,y:H/2-40,v:0,rot:0};
+  pipes=[];score=0;scroll=0;pipeNumber=0;
+  for(var i=0;i<3;i++)addPipe(W+120+i*SPACING);
+}
+function addPipe(x){
+  var min=90,max=H-GROUND-GAP-90;
+  pipeNumber++;
+  pipes.push({x:x,top:min+Math.random()*(max-min),passed:false,number:pipeNumber});
+}
+function flap(){
+  if(state==='ready'){state='play'}
+  if(state==='play'){bird.v=FLAP}
+  else if(state==='over'&&overT>0.5){reset();state='ready'}
+}
+var overT=0;
+function die(){
+  state='over';overT=0;flash=1;
+  if(score>best){best=score;try{localStorage.setItem('wh_best',String(best))}catch(e){}}
+}
+function hit(){
+  if(bird.y+R>H-GROUND||bird.y-R<-40)return true;
+  for(var i=0;i<pipes.length;i++){
+    var p=pipes[i];
+    if(bird.x+R>p.x&&bird.x-R<p.x+PW){
+      if(bird.y-R<p.top||bird.y+R>p.top+GAP)return true;
+    }
+  }
+  return false;
+}
+function update(dt){
+  t+=dt;
+  if(flash>0)flash=Math.max(0,flash-dt*3);
+  if(state==='over'){
+    overT+=dt;
+    if(bird.y+R<H-GROUND){bird.v+=GRAV*dt;bird.y+=bird.v*dt;bird.rot=Math.min(1.5,bird.rot+dt*6)}
+    else bird.y=H-GROUND-R;
+    return;
+  }
+  if(state==='ready'){
+    bird.y=H/2-40+Math.sin(t*4)*8;scroll+=SPEED*dt*0.6;return;
+  }
+  bird.v+=GRAV*dt;bird.y+=bird.v*dt;
+  bird.rot=Math.max(-0.45,Math.min(1.3,bird.v/520));
+  scroll+=SPEED*dt;
+  for(var i=0;i<pipes.length;i++){
+    var p=pipes[i];p.x-=SPEED*dt;
+    if(!p.passed&&p.x+PW<bird.x-R){p.passed=true;score++}
+  }
+  if(pipes[0].x+PW<-10){pipes.shift();addPipe(pipes[pipes.length-1].x+SPACING)}
+  if(hit())die();
+}
+function pillar(x,y,h,flip){
+  var gr=g.createLinearGradient(x,0,x+PW,0);
+  gr.addColorStop(0,'#3f8f6b');gr.addColorStop(.5,'#5fbf8f');gr.addColorStop(1,'#2f7655');
+  g.fillStyle=gr;g.fillRect(x+4,y,PW-8,h);
+  var capY=flip?y+h-22:y;
+  g.fillRect(x,capY,PW,22);
+  g.strokeStyle='#1f4d38';g.lineWidth=2;
+  g.strokeRect(x+4,y,PW-8,h);g.strokeRect(x,capY,PW,22);
+}
+function drawVerticalLabel(x,y,h,name){
+  if(!name||h<35)return;
+  g.save();
+  // Keep the stacked lettering inside the pole body.
+  g.beginPath();g.rect(x+5,y+2,PW-10,Math.max(0,h-4));g.clip();
+  var fontSize=Math.min(14,Math.max(9,(h-8)/name.length));
+  var lineGap=fontSize+1;
+  var total=(name.length-1)*lineGap;
+  var startY=y+h/2-total/2;
+  g.textAlign='center';g.textBaseline='middle';
+  g.font='900 '+fontSize+'px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+  for(var j=0;j<name.length;j++){
+    var cy=startY+j*lineGap;
+    g.lineWidth=2.5;g.lineJoin='round';g.strokeStyle='rgba(20,45,32,.95)';
+    g.strokeText(name[j],x+PW/2,cy);
+    g.fillStyle='#fff7cf';g.fillText(name[j],x+PW/2,cy);
+  }
+  g.restore();
+}
+function drawBird(){
+  g.save();g.translate(bird.x,bird.y);g.rotate(bird.rot);
+  g.fillStyle='#ff9f43';g.beginPath();g.ellipse(0,0,R+4,R+1,0,0,7);g.fill();
+  g.fillStyle='#ffd27a';g.beginPath();g.ellipse(-2,5,R-2,R-7,0,0,7);g.fill();
+  var w=state==='play'?Math.sin(t*28)*7:Math.sin(t*10)*4;
+  g.fillStyle='#e8742a';g.beginPath();g.ellipse(-5,1+w*0.2,8,4+Math.abs(w)*0.5,-0.4,0,7);g.fill();
+  g.fillStyle='#fff';g.beginPath();g.arc(7,-5,5,0,7);g.fill();
+  g.fillStyle='#1d2b3a';g.beginPath();g.arc(8.5,-5,2.4,0,7);g.fill();
+  g.fillStyle='#e84a3d';g.beginPath();g.moveTo(13,-1);g.lineTo(23,2);g.lineTo(13,6);g.closePath();g.fill();
+  g.restore();
+}
+function text(s,x,y,size,col){
+  g.font='700 '+size+'px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+  g.textAlign='center';g.lineWidth=size/6;g.strokeStyle='rgba(20,30,40,.85)';
+  g.lineJoin='round';g.strokeText(s,x,y);g.fillStyle=col||'#fff';g.fillText(s,x,y);
+}
+function draw(){
+  var sky=g.createLinearGradient(0,0,0,H);
+  sky.addColorStop(0,'#2b4a7a');sky.addColorStop(.6,'#e58a6b');sky.addColorStop(1,'#f6c58b');
+  g.fillStyle=sky;g.fillRect(0,0,W,H);
+  // far hills
+  g.fillStyle='rgba(40,50,90,.45)';
+  for(var i=-1;i<4;i++){
+    var hx=i*140-(scroll*0.2%140);
+    g.beginPath();g.ellipse(hx+70,H-GROUND,110,70+((i&1)*25),0,Math.PI,0);g.fill();
+  }
+  for(i=0;i<pipes.length;i++){
+    var p=pipes[i];
+    var poleName=poleNames[p.number];
+    var topHeight=p.top+10,bottomY=p.top+GAP,bottomHeight=H-GROUND-bottomY;
+    pillar(p.x,-10,topHeight,true);
+    pillar(p.x,bottomY,bottomHeight,false);
+    // The milestone name appears vertically on both poles of that pair.
+    if(poleName){
+      drawVerticalLabel(p.x,-10,topHeight,poleName);
+      drawVerticalLabel(p.x,bottomY,bottomHeight,poleName);
+    }
+  }
+  // ground
+  g.fillStyle='#6b4a32';g.fillRect(0,H-GROUND,W,GROUND);
+  g.fillStyle='#7fcf5b';g.fillRect(0,H-GROUND,W,14);
+  g.fillStyle='#4f9d3b';
+  var off=scroll%28;
+  for(i=-1;i<W/28+1;i++){g.fillRect(i*28-off,H-GROUND+14,14,6)}
+  drawBird();
+  // Music toggle
+  g.fillStyle='rgba(20,30,40,.48)';g.beginPath();g.roundRect(292,18,56,34,10);g.fill();
+  text(musicOn?'♫ ON':'♫ OFF',320,42,14,musicOn?'#fff':'#ffd27a');
+  if(state!=='ready')text(String(score),W/2,90,52);
+  if(state==='ready'){
+    text('Wing Hop',W/2,200,46);
+    text('Tap to flap',W/2,H-GROUND-60,24);
+    if(best)text('Best '+best,W/2,H-GROUND+50,22);
+  }
+  if(state==='over'){
+    g.fillStyle='rgba(20,30,40,.7)';g.fillRect(50,210,260,170);
+    text('Game over',W/2,262,36);
+    text('Score '+score,W/2,306,26);
+    text('Best '+best,W/2,342,26,'#ffd27a');
+    if(overT>0.5)text('Tap to retry',W/2,H-GROUND-30,22);
+  }
+  if(flash>0){g.fillStyle='rgba(255,255,255,'+flash*0.7+')';g.fillRect(0,0,W,H)}
+}
+var last=0;
+function loop(ts){
+  var dt=Math.min(0.033,(ts-last)/1000||0.016);last=ts;
+  update(dt);draw();requestAnimationFrame(loop);
+}
+function onTap(e){
+  e.preventDefault();
+  var rect=cv.getBoundingClientRect();
+  var x=(e.clientX-rect.left)*W/rect.width;
+  var y=(e.clientY-rect.top)*H/rect.height;
+  if(x>285&&y<62){toggleMusic();return}
+  startMusic();flap();
+}
+cv.addEventListener('pointerdown',onTap);
+window.addEventListener('keydown',function(e){
+    if(e.code==='KeyM'){toggleMusic();return}
+    if(e.code==='Space'||e.code==='ArrowUp'){e.preventDefault();startMusic();flap()}
+  });
+reset();requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
